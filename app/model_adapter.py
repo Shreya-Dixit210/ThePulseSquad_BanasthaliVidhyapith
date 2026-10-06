@@ -13,6 +13,7 @@ Current status:
 """
 
 from typing import Dict, Any, Tuple
+from functools import lru_cache
 import os
 import numpy as np
 import pandas as pd
@@ -36,7 +37,16 @@ FEATURE_COLUMNS = [
 
 # Path to the trained model artifact (when provided)
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "glucose_model.joblib")
+@lru_cache(maxsize=1)
+def _load_artifact():
+    """Load the saved model file once and reuse it on every later call."""
+    if os.path.exists(MODEL_PATH):
+        return joblib.load(MODEL_PATH)
+    return None
 
+
+# True when the trained model file was found; the dashboard can use this for a demo-mode tag
+USING_REAL_MODEL = _load_artifact() is not None
 
 def compute_features(
     history: pd.DataFrame,
@@ -96,21 +106,14 @@ def predict_risk(feature_row: pd.DataFrame) -> float:
     heuristic rule. When the trained model artifact is ready, replace this with the
     real model call indicated in the TODO below.
     """
-    # =========================================================================
-    # TODO: SWAP WITH REAL TRAINED MODEL WHEN 'models/glucose_model.joblib' EXISTS
-    # -------------------------------------------------------------------------
-    # Example integration code:
-    # if os.path.exists(MODEL_PATH):
-    #     artifact = joblib.load(MODEL_PATH)
-    #     model = artifact["model"]
-    #     features = artifact["features"]
-    #     # Ensure column alignment:
-    #     X = feature_row[features]
-    #     # LightGBM predict_proba returns probability of class 1:
-    #     prob = float(model.predict_proba(X)[0, 1])
-    #     return prob
-    # =========================================================================
-
+        # Use the trained model whenever it is available and the question makes sense.
+    # The model was trained only on rows where glucose is below the threshold.
+    artifact = _load_artifact()
+    glu_now_check = float(feature_row["glu_now"].iloc[0])
+    if artifact is not None and glu_now_check < artifact["threshold"]:
+        X = feature_row[artifact["features"]]   # same columns, same order as in training
+        return round(float(artifact["model"].predict_proba(X)[0, 1]), 3)
+    
     # --- PLACEHOLDER HEURISTIC RULE ---
     # Higher baseline glucose, rapid recent rise, high carbs, and recent meals
     # lead to a higher probability of breaching 180 mg/dL.

@@ -8,6 +8,7 @@ or participant records from the 'data/' folder are used.
 """
 
 from typing import Dict, List, Any
+import zlib
 import numpy as np
 import pandas as pd
 
@@ -174,7 +175,8 @@ def generate_patient_cgm(patient_meta: Dict[str, Any]) -> pd.DataFrame:
     """
     total_steps = 288  # 24 hours * 12 readings/hour
     step_minutes = 5
-    rng = np.random.default_rng(seed=abs(hash(patient_meta["id"])) % (2**32))
+   
+    rng = np.random.default_rng(seed=zlib.crc32(patient_meta["id"].encode()))   # stable across runs
 
     # Fasting glucose baseline
     base_glu = patient_meta["fasting_glu"]
