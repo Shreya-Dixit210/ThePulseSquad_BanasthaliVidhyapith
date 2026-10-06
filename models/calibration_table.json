@@ -1,0 +1,50 @@
+[
+  {
+    "low": -0.001,
+    "high": 0.1,
+    "rows": 58901,
+    "actual_rate": 0.067
+  },
+  {
+    "low": 0.1,
+    "high": 0.2,
+    "rows": 19915,
+    "actual_rate": 0.15
+  },
+  {
+    "low": 0.2,
+    "high": 0.3,
+    "rows": 10223,
+    "actual_rate": 0.202
+  },
+  {
+    "low": 0.3,
+    "high": 0.4,
+    "rows": 5879,
+    "actual_rate": 0.273
+  },
+  {
+    "low": 0.4,
+    "high": 0.5,
+    "rows": 3681,
+    "actual_rate": 0.379
+  },
+  {
+    "low": 0.5,
+    "high": 0.6,
+    "rows": 2708,
+    "actual_rate": 0.438
+  },
+  {
+    "low": 0.6,
+    "high": 0.8,
+    "rows": 3912,
+    "actual_rate": 0.54
+  },
+  {
+    "low": 0.8,
+    "high": 1.0,
+    "rows": 2050,
+    "actual_rate": 0.73
+  }
+]
