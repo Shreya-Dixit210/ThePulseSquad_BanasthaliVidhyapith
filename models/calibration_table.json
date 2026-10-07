@@ -2,49 +2,49 @@
   {
     "low": -0.001,
     "high": 0.1,
-    "rows": 58901,
+    "rows": 61603,
     "actual_rate": 0.067
   },
   {
     "low": 0.1,
     "high": 0.2,
-    "rows": 19915,
-    "actual_rate": 0.15
+    "rows": 20036,
+    "actual_rate": 0.158
   },
   {
     "low": 0.2,
     "high": 0.3,
-    "rows": 10223,
-    "actual_rate": 0.202
+    "rows": 8256,
+    "actual_rate": 0.232
   },
   {
     "low": 0.3,
     "high": 0.4,
-    "rows": 5879,
-    "actual_rate": 0.273
+    "rows": 5204,
+    "actual_rate": 0.282
   },
   {
     "low": 0.4,
     "high": 0.5,
-    "rows": 3681,
-    "actual_rate": 0.379
+    "rows": 3746,
+    "actual_rate": 0.373
   },
   {
     "low": 0.5,
     "high": 0.6,
-    "rows": 2708,
-    "actual_rate": 0.438
+    "rows": 2847,
+    "actual_rate": 0.409
   },
   {
     "low": 0.6,
     "high": 0.8,
-    "rows": 3912,
-    "actual_rate": 0.54
+    "rows": 3746,
+    "actual_rate": 0.575
   },
   {
     "low": 0.8,
     "high": 1.0,
-    "rows": 2050,
-    "actual_rate": 0.73
+    "rows": 1831,
+    "actual_rate": 0.757
   }
 ]
