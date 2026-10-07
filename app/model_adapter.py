@@ -20,6 +20,11 @@ import pandas as pd
 import joblib
 import json
 
+import warnings
+import shap
+
+warnings.filterwarnings("ignore", message="LightGBM binary classifier")  # hides a harmless shap version notice
+
 # The exact feature ordering expected by the trained LightGBM model
 FEATURE_COLUMNS = [
     "glu_now",
@@ -176,8 +181,8 @@ def get_risk_badge(risk: float) -> Tuple[str, str, str]:
     else:
         return "High Risk", "#dc3545", "🔴 High Risk (≥ 0.40)"
 
-
-def get_feature_contributions(feature_row: pd.DataFrame) -> pd.DataFrame:
+def _placeholder_contributions(feature_row: pd.DataFrame) -> pd.DataFrame:
+    
     """
     Generates placeholder feature importance/contributions for the 'Why' panel.
     PLACEHOLDER: In the future, this will be calculated using TreeSHAP on the LightGBM model.
@@ -223,3 +228,51 @@ def validation_rate(score):
         if b["low"] < score <= b["high"]:
             return b["actual_rate"], b["rows"]
     return None
+
+# Readable names for the "Why" panel. The prefix tells the doctor whether a factor is
+# the patient's fixed baseline or their current situation.
+FEATURE_LABELS = {
+    "fasting_glu": "Baseline | Fasting glucose",
+    "Insulin": "Baseline | Fasting insulin",
+    "A1c": "Baseline | HbA1c",
+    "HDL": "Baseline | HDL",
+    "BMI": "Baseline | BMI",
+    "Age": "Baseline | Age",
+    "Triglycerides": "Baseline | Triglycerides",
+    "Gender": "Baseline | Sex",
+    "glu_now": "Now | Current glucose",
+    "glu_change_30": "Now | 30-min glucose change",
+    "mins_since_meal": "Now | Time since last meal",
+    "meal_carbs": "Now | Carbs in last meal",
+}
+
+
+@lru_cache(maxsize=1)
+def _get_explainer():
+    """Build the SHAP explainer once; it is reused for every patient."""
+    artifact = _load_artifact()
+    return shap.TreeExplainer(artifact["model"]) if artifact is not None else None
+
+
+def get_feature_contributions(feature_row: pd.DataFrame) -> pd.DataFrame:
+    """Real SHAP contributions from the saved model (log-odds scale).
+    Falls back to the placeholder if the model is missing or glucose is already above the threshold."""
+    artifact = _load_artifact()
+    glu_now = float(feature_row["glu_now"].iloc[0])
+    if artifact is None or glu_now >= artifact["threshold"]:
+        return _placeholder_contributions(feature_row)
+
+    X = feature_row[artifact["features"]]
+    sv = _get_explainer().shap_values(X)
+    if isinstance(sv, list):                 # some shap versions return one array per class
+        sv = sv[1]
+    elif getattr(sv, "ndim", 2) == 3:
+        sv = sv[:, :, 1]
+
+    df = pd.DataFrame({
+        "Feature": [FEATURE_LABELS[f] for f in artifact["features"]],
+        "Impact": np.round(sv[0], 3),
+    })
+    df["AbsImpact"] = df["Impact"].abs()
+    top = df.sort_values("AbsImpact", ascending=False).head(8)
+    return top.sort_values("AbsImpact", ascending=True).reset_index(drop=True)
