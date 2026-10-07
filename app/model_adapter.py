@@ -18,6 +18,7 @@ import os
 import numpy as np
 import pandas as pd
 import joblib
+import json
 
 # The exact feature ordering expected by the trained LightGBM model
 FEATURE_COLUMNS = [
@@ -203,3 +204,22 @@ def get_feature_contributions(feature_row: pd.DataFrame) -> pd.DataFrame:
     df["AbsImpact"] = df["Impact"].abs()
     df = df.sort_values(by="AbsImpact", ascending=True).reset_index(drop=True)
     return df
+
+CALIBRATION_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "calibration_table.json")
+
+
+@lru_cache(maxsize=1)
+def _load_calibration():
+    """Read the validation table once: for each score range, how often glucose really reached the threshold."""
+    if os.path.exists(CALIBRATION_PATH):
+        with open(CALIBRATION_PATH) as f:
+            return json.load(f)
+    return []
+
+
+def validation_rate(score):
+    """Return (actual_rate, rows) for the score range this score falls in, or None if not found."""
+    for b in _load_calibration():
+        if b["low"] < score <= b["high"]:
+            return b["actual_rate"], b["rows"]
+    return None
