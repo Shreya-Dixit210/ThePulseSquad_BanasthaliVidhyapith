@@ -26,6 +26,7 @@ from model_adapter import (
     predict_risk,
     get_risk_badge,
     get_feature_contributions,
+    validation_rate,
 )
 
 # Page configuration
@@ -114,13 +115,14 @@ def build_why_chart(contributions_df: pd.DataFrame) -> go.Figure:
             hovertemplate="Feature: %{y}<br>Impact: %{x:+.3f}<extra></extra>",
         )
     )
-
     fig.update_layout(
-        title="Top Contributing Factors (Placeholder Heuristic — SHAP to be integrated)",
-        xaxis_title="Relative Impact on Risk of Breaching 180 mg/dL (Signed)",
+        title="What drives this score (from the model)",
+        xaxis_title="Push on the risk score (right = higher risk, left = lower risk)",
+        yaxis=dict(automargin=True),
         margin=dict(l=10, r=20, t=40, b=20),
-        height=280,
+        height=320,
     )
+    
     return fig
 
 
@@ -285,10 +287,11 @@ def show_patient_detail(patient: Dict[str, Any]):
             contributions_df = get_feature_contributions(feat_df)
             why_fig = build_why_chart(contributions_df)
             st.plotly_chart(why_fig, use_container_width=True)
-            st.info(
-                "📌 **Placeholder Notice:** Feature contribution weights are currently estimated "
-                "by heuristic rules. Once `models/glucose_model.joblib` is integrated, this will "
-                "display exact LightGBM TreeSHAP values."
+            
+            st.caption(
+                "Bars show how much each factor moved this patient's score, according to the model. "
+                "'Baseline' items are fixed for the patient; 'Now' items reflect the current situation. "
+                "Bar size is a relative measure, not a percentage, and does not prove a cause."
             )
 
     with col_whatif:
