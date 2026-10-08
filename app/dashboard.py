@@ -130,8 +130,9 @@ def show_patient_list(patients: List[Dict[str, Any]]):
     """Page 1: Patient Cohort List with risk sorting and triage badges."""
     st.title("🩺 Type 2 Diabetes: Digital Twin Risk Monitor")
     st.markdown(
-        "**Physician Decision-Support Overview** — Real-time 2-hour hyperglycemia risk "
-        "predictions across your monitored patient cohort."
+        "**Physician Decision-Support Overview** — Simulated patients. Model risk scores "
+        "for reaching 180 mg/dL within the next 2 hours."
+        
     )
 
     # Calculate current risk for all patients
@@ -202,7 +203,7 @@ def show_patient_list(patients: List[Dict[str, Any]]):
                     f"<div style='font-size: 1.1rem; font-weight: bold; color: {p['hex_color']};'>"
                     f"{p['badge']}</div>"
                     f"<div style='font-size: 0.82rem; color: #666;'>"
-                    f"Risk: {p['risk']:.1%} chance of ≥180 mg/dL</div>",
+                    f"Model score: {p['risk']:.2f}</div>",
                     unsafe_allow_html=True,
                 )
             with cols[5]:
@@ -252,24 +253,36 @@ def show_patient_detail(patient: Dict[str, Any]):
         p_cols[5].metric("Fasting Insulin", f"{patient['static']['Insulin']:.0f} µIU/mL")
 
     # 2. Current Risk Banner
-    risk_percent = baseline_risk * 100
+        # 2. Current Risk Banner
+    # Validation line: how often cases with a similar score really reached 180 mg/dL
+    val = validation_rate(baseline_risk)
+    if val is not None:
+        val_rate, val_rows = val
+        validation_text = (
+            f"In validation on unseen participants, about <strong>{val_rate:.0%}</strong> of cases "
+            f"with a score in this range reached 180 mg/dL within 2 hours ({val_rows:,} cases)."
+        )
+    else:
+        validation_text = ""
+
     st.markdown(
         f"""
         <div style="background-color: rgba(220, 53, 69, 0.08); border-left: 6px solid {hex_color};
                     padding: 14px 20px; border-radius: 6px; margin: 12px 0 20px 0;">
             <div style="font-size: 0.95rem; color: #555; text-transform: uppercase; font-weight: 600;">
-                Current Predicted Hyperglycemia Risk
+                Model risk score (reaching 180 mg/dL within 2 hours)
             </div>
             <div style="font-size: 1.55rem; font-weight: 700; color: {hex_color}; margin: 4px 0;">
-                {baseline_risk:.3f} ({risk_percent:.1f}%) — {label}
+                {baseline_risk:.2f} — {label}
             </div>
             <div style="font-size: 1.0rem; color: #333;">
-                According to the model: <strong>{risk_percent:.1f}% chance</strong> of reaching 180 mg/dL in the next 2 hours.
+                A relative score from the model, not a calibrated probability. {validation_text}
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+    
 
     # 3. 24-Hour Glucose Line Chart
     cgm_fig = build_cgm_chart(patient["history"], patient["name"])
@@ -331,28 +344,32 @@ def show_patient_detail(patient: Dict[str, Any]):
             sim_label, sim_hex, sim_badge = get_risk_badge(sim_risk)
 
             # Before and after comparison
+                    
             delta_risk = sim_risk - baseline_risk
-            delta_percent = delta_risk * 100
 
             st.markdown("#### Simulation Outcome")
             st.write(
-                f"**Baseline Risk:** `{baseline_risk:.3f}` ({baseline_risk * 100:.1f}%) "
-                f"&nbsp; ➔ &nbsp; **Simulated Risk:** `{sim_risk:.3f}` ({sim_risk * 100:.1f}%)"
+                f"**Baseline score:** `{baseline_risk:.2f}` "
+                f"&nbsp; ➔ &nbsp; **Simulated score:** `{sim_risk:.2f}` "
+                f"&nbsp; (change {delta_risk:+.2f})"
             )
 
-            if delta_percent < -0.5:
+            if delta_risk < -0.005:
                 st.success(
-                    f"According to the model, reducing carbs or allowing more digestion time "
-                    f"decreases predicted risk by **{abs(delta_percent):.1f}%** points."
+                    f"According to the model, these meal inputs lower the risk score by {abs(delta_risk):.2f}."
                 )
-            elif delta_percent > 0.5:
+            elif delta_risk > 0.005:
                 st.warning(
-                    f"According to the model, higher carbs or more recent intake "
-                    f"increases predicted risk by **{delta_percent:.1f}%** points."
+                    f"According to the model, these meal inputs raise the risk score by {delta_risk:.2f}."
                 )
             else:
-                st.info("According to the model, risk remains approximately unchanged under these parameters.")
+                st.info("According to the model, the risk score is essentially unchanged.")
 
+            st.caption(
+                "This shows how sensitive the model is to the meal inputs. The patient's glucose "
+                "history is kept fixed, so it is not a forecast of what would really happen."
+            )
+            
             st.caption(
                 f"Simulated classification: <span style='color: {sim_hex}; font-weight: bold;'>{sim_badge}</span>",
                 unsafe_allow_html=True,
