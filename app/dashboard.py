@@ -258,9 +258,11 @@ def show_patient_detail(patient: Dict[str, Any]):
     val = validation_rate(baseline_risk)
     if val is not None:
         val_rate, val_rows = val
+       
         validation_text = (
-            f"In validation on unseen participants, about <strong>{val_rate:.0%}</strong> of cases "
-            f"with a score in this range reached 180 mg/dL within 2 hours ({val_rows:,} cases)."
+            f"In validation on unseen participants, about <strong>{val_rate:.0%}</strong> of readings "
+            f"with a score in this range were followed by a rise to 180 mg/dL within 2 hours "
+            f"({val_rows:,} five-minute readings; neighbouring readings are highly correlated)."
         )
     else:
         validation_text = ""
