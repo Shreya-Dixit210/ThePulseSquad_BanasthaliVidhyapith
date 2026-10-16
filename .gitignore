@@ -2,3 +2,13 @@
 data/
 __pycache__/
 .ipynb_checkpoints/
+# Local editor settings
+.vscode/
+
+# Temporary backups
+*.backup
+*.bak
+
+# Python and test artifacts
+*.py[cod]
+.pytest_cache/

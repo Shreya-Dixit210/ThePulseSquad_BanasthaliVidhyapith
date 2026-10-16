@@ -1,31 +1,18 @@
-"""
-model_adapter.py
-Acts as the interface between the dashboard and the predictive model.
 
-Predicts the probability that a patient's glucose will reach >= 180 mg/dL
-within the next 120 minutes.
+"""Interface between the dashboard and the trained glucose-risk model."""
 
-Current status:
-- Features are extracted in `compute_features()`.
-- `predict_risk()` currently uses a transparent heuristic placeholder rule.
-- A clear TODO block shows how to load and query 'models/glucose_model.joblib'
-  once the trained model artifact is plugged in.
-"""
-
-from typing import Dict, Any, Tuple
 from functools import lru_cache
-import os
+from pathlib import Path
+from typing import Dict, Tuple
+
+import joblib
 import numpy as np
 import pandas as pd
-import joblib
-import json
 
-import warnings
-import shap
+BASE_DIR = Path(__file__).resolve().parent.parent
+MODEL_PATH = BASE_DIR / "models" / "glucose_model.joblib"
+CALIBRATION_PATH = BASE_DIR / "models" / "calibration_table.json"
 
-warnings.filterwarnings("ignore", message="LightGBM binary classifier")  # hides a harmless shap version notice
-
-# The exact feature ordering expected by the trained LightGBM model
 FEATURE_COLUMNS = [
     "glu_now",
     "glu_change_30",
@@ -41,18 +28,26 @@ FEATURE_COLUMNS = [
     "Triglycerides",
 ]
 
-# Path to the trained model artifact (when provided)
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "glucose_model.joblib")
+
 @lru_cache(maxsize=1)
 def _load_artifact():
-    """Load the saved model file once and reuse it on every later call."""
-    if os.path.exists(MODEL_PATH):
-        return joblib.load(MODEL_PATH)
-    return None
+    """Load the saved model once. Raise a useful error if loading fails."""
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Trained model not found: {MODEL_PATH}")
 
+    artifact = joblib.load(MODEL_PATH)
 
-# True when the trained model file was found; the dashboard can use this for a demo-mode tag
-USING_REAL_MODEL = _load_artifact() is not None
+    if not isinstance(artifact, dict) or "model" not in artifact:
+        raise ValueError("Model artifact must contain a 'model' entry.")
+
+    if "features" not in artifact:
+        raise ValueError("Model artifact is missing its feature list.")
+
+    if not hasattr(artifact["model"], "predict_proba"):
+        raise TypeError("Saved model does not support predict_proba().")
+
+    return artifact
+
 
 def compute_features(
     history: pd.DataFrame,
@@ -60,32 +55,20 @@ def compute_features(
     mins_since_meal: float,
     meal_carbs: float,
 ) -> pd.DataFrame:
-    """
-    Builds the single-row feature vector from patient history and static demographics.
-    This function isolates feature preparation so it can be swapped with shared
-    training feature pipeline code later.
+    """Build one model input row from glucose history and patient inputs."""
+    if history.empty or "glucose" not in history.columns:
+        raise ValueError("History must contain at least one glucose reading.")
 
-    Parameters:
-    - history: DataFrame containing the 5-minute CGM readings.
-    - static: Dictionary containing demographic/clinical variables.
-    - mins_since_meal: Minutes elapsed since the most recent meal.
-    - meal_carbs: Total grams of carbohydrates in the most recent meal.
-
-    Returns:
-    - pd.DataFrame with exactly 1 row and columns matching FEATURE_COLUMNS.
-    """
     glu_now = float(history["glucose"].iloc[-1])
-
-    # Glucose 30 minutes ago (6 steps back: 6 * 5 min = 30 min)
-    if len(history) >= 7:
-        glu_30_ago = float(history["glucose"].iloc[-7])
-    else:
-        glu_30_ago = glu_now
-    glu_change_30 = float(glu_now - glu_30_ago)
+    glu_30_ago = (
+        float(history["glucose"].iloc[-7])
+        if len(history) >= 7
+        else glu_now
+    )
 
     row = {
         "glu_now": glu_now,
-        "glu_change_30": glu_change_30,
+        "glu_change_30": glu_now - glu_30_ago,
         "mins_since_meal": float(mins_since_meal),
         "meal_carbs": float(meal_carbs),
         "Age": float(static.get("Age", 50.0)),
@@ -98,181 +81,146 @@ def compute_features(
         "Triglycerides": float(static.get("Triglycerides", 150.0)),
     }
 
-    # Ensure exact column order as specified in MODEL_CARD.md
-    df = pd.DataFrame([row], columns=FEATURE_COLUMNS)
-    return df
+    return pd.DataFrame([row], columns=FEATURE_COLUMNS)
 
 
 def predict_risk(feature_row: pd.DataFrame) -> float:
-    """
-    Predicts the probability (0.0 to 1.0) that glucose will reach >= 180 mg/dL
-    within the next 2 hours.
-
-    Currently returns a PLACEHOLDER risk calculated using a physiologically grounded
-    heuristic rule. When the trained model artifact is ready, replace this with the
-    real model call indicated in the TODO below.
-    """
-        # Use the trained model whenever it is available and the question makes sense.
-    # The model was trained only on rows where glucose is below the threshold.
+    """Return the trained model's estimated probability for the target event."""
     artifact = _load_artifact()
-    glu_now_check = float(feature_row["glu_now"].iloc[0])
-    if artifact is not None and glu_now_check < artifact["threshold"]:
-        X = feature_row[artifact["features"]]   # same columns, same order as in training
-        return round(float(artifact["model"].predict_proba(X)[0, 1]), 3)
-    
-    # --- PLACEHOLDER HEURISTIC RULE ---
-    # Higher baseline glucose, rapid recent rise, high carbs, and recent meals
-    # lead to a higher probability of breaching 180 mg/dL.
-    glu_now = float(feature_row["glu_now"].iloc[0])
-    glu_change_30 = float(feature_row["glu_change_30"].iloc[0])
-    mins_since_meal = float(feature_row["mins_since_meal"].iloc[0])
-    meal_carbs = float(feature_row["meal_carbs"].iloc[0])
-    a1c = float(feature_row["A1c"].iloc[0])
+    features = artifact["features"]
+    threshold = float(artifact.get("threshold", 180.0))
 
-    # If current glucose is already >= 180 mg/dL, breach has already occurred
-    if glu_now >= 180.0:
-        return 0.95
+    missing = [column for column in features if column not in feature_row.columns]
+    if missing:
+        raise ValueError(f"Missing model features: {missing}")
 
-    # 1. Glucose proximity score (distance to 180 threshold)
-    proximity_score = (glu_now - 100.0) / 80.0  # 0 at 100 mg/dL, 1.0 at 180 mg/dL
+    X = feature_row.loc[:, features].copy()
 
-    # 2. Rate of rise score
-    trend_score = glu_change_30 / 30.0  # +30 mg/dL in 30 min adds +1.0
+    if X.empty or not np.isfinite(X.to_numpy(dtype=float)).all():
+        raise ValueError("Model input must contain finite numeric values.")
 
-    # 3. Postprandial excursion remaining
-    # Meals within 15-75 min are peaking; meals > 150 min have largely cleared
-    if mins_since_meal <= 90:
-        time_factor = (90.0 - mins_since_meal) / 90.0
-    else:
-        time_factor = -min((mins_since_meal - 90.0) / 120.0, 0.6)
+    # The target is a future threshold event. If the threshold has
+    # already been reached, the dashboard should label that separately.
+    if float(feature_row["glu_now"].iloc[0]) >= threshold:
+        return 1.0
 
-    carb_score = (meal_carbs / 70.0) * (0.8 + 0.5 * time_factor)
-
-    # 4. Metabolic resistance (A1c baseline)
-    a1c_score = (a1c - 6.5) * 0.25
-
-    # Weighted linear combination
-    z = (
-        -2.2
-        + (1.8 * proximity_score)
-        + (1.0 * trend_score)
-        + (1.1 * carb_score)
-        + (0.6 * a1c_score)
-    )
-
-    # Sigmoid function to map to a well-behaved probability [0.02, 0.95]
-    prob = 1.0 / (1.0 + np.exp(-z))
-    prob = float(np.clip(prob, 0.02, 0.95))
-
-    return round(prob, 3)
+    probability = float(artifact["model"].predict_proba(X)[0, 1])
+    return float(np.clip(probability, 0.0, 1.0))
 
 
 def get_risk_badge(risk: float) -> Tuple[str, str, str]:
-    """
-    Returns the classification label, hex color, and badge text based on MODEL_CARD:
-    - Green: risk < 0.2
-    - Yellow: 0.2 <= risk < 0.4
-    - Red: risk >= 0.4
-    """
+    """Return risk category, colour, and readable badge text."""
     if risk < 0.2:
         return "Low Risk", "#28a745", "🟢 Low Risk (< 0.20)"
-    elif risk < 0.4:
-        return "Moderate Risk", "#d39e00", "🟡 Moderate Risk (0.20 – 0.40)"
-    else:
-        return "High Risk", "#dc3545", "🔴 High Risk (≥ 0.40)"
-
-def _placeholder_contributions(feature_row: pd.DataFrame) -> pd.DataFrame:
-    
-    """
-    Generates placeholder feature importance/contributions for the 'Why' panel.
-    PLACEHOLDER: In the future, this will be calculated using TreeSHAP on the LightGBM model.
-    """
-    glu_now = float(feature_row["glu_now"].iloc[0])
-    glu_change_30 = float(feature_row["glu_change_30"].iloc[0])
-    mins_since_meal = float(feature_row["mins_since_meal"].iloc[0])
-    meal_carbs = float(feature_row["meal_carbs"].iloc[0])
-    a1c = float(feature_row["A1c"].iloc[0])
-    bmi = float(feature_row["BMI"].iloc[0])
-
-    # Relative directional contributions (positive = increases risk of >=180)
-    contributions = [
-        {"Feature": "Current Glucose (glu_now)", "Impact": round((glu_now - 120.0) * 0.005, 3)},
-        {"Feature": "Recent Meal Carbs (meal_carbs)", "Impact": round((meal_carbs - 45.0) * 0.006, 3)},
-        {"Feature": "30-min Trend (glu_change_30)", "Impact": round(glu_change_30 * 0.008, 3)},
-        {"Feature": "Time Since Meal (mins_since_meal)", "Impact": round((90.0 - mins_since_meal) * 0.002, 3)},
-        {"Feature": "Baseline A1c", "Impact": round((a1c - 7.0) * 0.04, 3)},
-        {"Feature": "Body Mass Index (BMI)", "Impact": round((bmi - 28.0) * 0.01, 3)},
-    ]
-
-    df = pd.DataFrame(contributions)
-    # Sort by absolute impact descending
-    df["AbsImpact"] = df["Impact"].abs()
-    df = df.sort_values(by="AbsImpact", ascending=True).reset_index(drop=True)
-    return df
-
-CALIBRATION_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "calibration_table.json")
+    if risk < 0.4:
+        return "Moderate Risk", "#d39e00", "🟡 Moderate Risk (0.20–0.40)"
+    return "High Risk", "#dc3545", "🔴 High Risk (≥ 0.40)"
 
 
 @lru_cache(maxsize=1)
 def _load_calibration():
-    """Read the validation table once: for each score range, how often glucose really reached the threshold."""
-    if os.path.exists(CALIBRATION_PATH):
-        with open(CALIBRATION_PATH) as f:
-            return json.load(f)
-    return []
+    """Load the observed-rate calibration bins from the saved JSON file."""
+    if not CALIBRATION_PATH.exists():
+        return None
+
+    import json
+
+    with CALIBRATION_PATH.open("r", encoding="utf-8") as file:
+        bins = json.load(file)
+
+    if not isinstance(bins, list):
+        raise ValueError("Calibration file must contain a list of bins.")
+
+    return bins
 
 
-def validation_rate(score):
-    """Return (actual_rate, rows) for the score range this score falls in, or None if not found."""
-    for b in _load_calibration():
-        if b["low"] < score <= b["high"]:
-            return b["actual_rate"], b["rows"]
+def validation_rate(score: float):
+    """
+    Return (observed event rate, row count) for the matching score bin.
+    Return None when no calibration bin is available.
+    """
+    bins = _load_calibration()
+    if not bins:
+        return None
+
+    score = float(score)
+
+
+    for index, item in enumerate(bins):
+        low = float(item["low"])
+        high = float(item["high"])
+
+        # Match pandas pd.cut bins: (low, high]
+        matches = low < score <= high
+
+        if matches:
+            return float(item["actual_rate"]), int(item["rows"])
+
     return None
-
-# Readable names for the "Why" panel. The prefix tells the doctor whether a factor is
-# the patient's fixed baseline or their current situation.
-FEATURE_LABELS = {
-    "fasting_glu": "Baseline | Fasting glucose",
-    "Insulin": "Baseline | Fasting insulin",
-    "A1c": "Baseline | HbA1c",
-    "HDL": "Baseline | HDL",
-    "BMI": "Baseline | BMI",
-    "Age": "Baseline | Age",
-    "Triglycerides": "Baseline | Triglycerides",
-    "Gender": "Baseline | Sex",
-    "glu_now": "Now | Current glucose",
-    "glu_change_30": "Now | 30-min glucose change",
-    "mins_since_meal": "Now | Time since last meal",
-    "meal_carbs": "Now | Carbs in last meal",
-}
 
 
 @lru_cache(maxsize=1)
 def _get_explainer():
-    """Build the SHAP explainer once; it is reused for every patient."""
-    artifact = _load_artifact()
-    return shap.TreeExplainer(artifact["model"]) if artifact is not None else None
+    """Create a TreeSHAP explainer for the loaded model."""
+    import shap
+
+    return shap.TreeExplainer(_load_artifact()["model"])
 
 
 def get_feature_contributions(feature_row: pd.DataFrame) -> pd.DataFrame:
-    """Real SHAP contributions from the saved model (log-odds scale).
-    Falls back to the placeholder if the model is missing or glucose is already above the threshold."""
-    artifact = _load_artifact()
-    glu_now = float(feature_row["glu_now"].iloc[0])
-    if artifact is None or glu_now >= artifact["threshold"]:
-        return _placeholder_contributions(feature_row)
+    """
+    Return genuine TreeSHAP contributions when SHAP is available.
+    Impact values are on the model's raw output scale, not percentages.
+    An empty DataFrame means explanations are unavailable.
+    """
+    try:
+        artifact = _load_artifact()
+        features = artifact["features"]
+        X = feature_row.loc[:, features].copy()
 
-    X = feature_row[artifact["features"]]
-    sv = _get_explainer().shap_values(X)
-    if isinstance(sv, list):                 # some shap versions return one array per class
-        sv = sv[1]
-    elif getattr(sv, "ndim", 2) == 3:
-        sv = sv[:, :, 1]
+        # Newer SHAP versions may return an Explanation object;
+        # older versions may return a list of arrays.
+        explanation = _get_explainer()(X)
+        values = explanation.values
 
-    df = pd.DataFrame({
-        "Feature": [FEATURE_LABELS[f] for f in artifact["features"]],
-        "Impact": np.round(sv[0], 3),
-    })
-    df["AbsImpact"] = df["Impact"].abs()
-    top = df.sort_values("AbsImpact", ascending=False).head(8)
-    return top.sort_values("AbsImpact", ascending=True).reset_index(drop=True)
+        values = np.asarray(values)
+
+        # Binary classifiers can return (rows, features, classes).
+        if values.ndim == 3:
+            values = values[0, :, -1]
+        elif values.ndim == 2:
+            values = values[0]
+        elif values.ndim != 1:
+            return pd.DataFrame(columns=["Feature", "Impact", "AbsImpact"])
+
+
+        if len(values) != len(features):
+            return pd.DataFrame(columns=["Feature", "Impact", "AbsImpact"])
+
+        labels = {
+            "glu_now": "Current Glucose",
+            "glu_change_30": "30-min Glucose Trend",
+            "mins_since_meal": "Time Since Meal",
+            "meal_carbs": "Meal Carbohydrates",
+            "Age": "Age",
+            "Gender": "Gender",
+            "BMI": "Body Mass Index (BMI)",
+            "A1c": "Baseline A1c",
+            "fasting_glu": "Fasting Glucose",
+            "Insulin": "Insulin",
+            "HDL": "HDL",
+            "Triglycerides": "Triglycerides",
+        }
+
+        result = pd.DataFrame({
+            "Feature": [labels.get(name, name) for name in features],
+            "Impact": values.astype(float),
+        })
+        result["AbsImpact"] = result["Impact"].abs()
+        return result.sort_values(
+            "AbsImpact", ascending=True
+        ).reset_index(drop=True)
+
+    except (ImportError, ModuleNotFoundError, ValueError, TypeError):
+        # Do not substitute made-up contributions if SHAP is unavailable.
+        return pd.DataFrame(columns=["Feature", "Impact", "AbsImpact"])

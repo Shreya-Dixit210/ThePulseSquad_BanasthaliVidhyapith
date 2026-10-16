@@ -8,7 +8,6 @@ or participant records from the 'data/' folder are used.
 """
 
 from typing import Dict, List, Any
-import zlib
 import numpy as np
 import pandas as pd
 
@@ -77,8 +76,8 @@ SYNTHETIC_PATIENTS: List[Dict[str, Any]] = [
         "insulin": 15.0,
         "hdl": 44.0,
         "triglycerides": 165.0,
-        "dinner_carbs": 55.0,
-        "mins_since_dinner": 75,
+        "dinner_carbs": 75.0,
+        "mins_since_dinner": 60,
         "breakfast_carbs": 35.0,
         "lunch_carbs": 55.0,
     },
@@ -175,8 +174,12 @@ def generate_patient_cgm(patient_meta: Dict[str, Any]) -> pd.DataFrame:
     """
     total_steps = 288  # 24 hours * 12 readings/hour
     step_minutes = 5
-   
-    rng = np.random.default_rng(seed=zlib.crc32(patient_meta["id"].encode()))   # stable across runs
+
+    stable_seed = sum(
+        (i + 1) * ord(char)
+        for i, char in enumerate(patient_meta["id"])
+    )
+    rng = np.random.default_rng(seed=stable_seed)
 
     # Fasting glucose baseline
     base_glu = patient_meta["fasting_glu"]
@@ -227,7 +230,14 @@ def generate_patient_cgm(patient_meta: Dict[str, Any]) -> pd.DataFrame:
         curr_noise = 0.88 * curr_noise + rng.normal(0, 1.1)
         noise[i] = curr_noise
     glucose_profile += noise
+    # PT-104 is a deliberately constructed synthetic rising-glucose demo.
+    # This is for UI demonstration, not clinical validation.
 
+    if patient_meta["id"] == "PT-104":
+        glucose_profile[-7:] = np.linspace(165.0, 175.0, 7)
+
+
+    # Keep the synthetic scenario reproducible; do not force model scores.
     # Clip to realistic physiological limits and round
     glucose_profile = np.clip(glucose_profile, 70.0, 175.0)
     glucose_profile = np.round(glucose_profile, 1)
@@ -264,7 +274,7 @@ def get_all_patients() -> List[Dict[str, Any]]:
     patients = []
     for meta in SYNTHETIC_PATIENTS:
         cgm_df = generate_patient_cgm(meta)
-        
+
         # Current glucose (last row)
         glu_now = float(cgm_df["glucose"].iloc[-1])
         # Glucose 30 minutes ago (6 steps back: 6 * 5 min = 30 min)

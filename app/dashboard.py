@@ -1,6 +1,6 @@
-"""
+﻿"""
 dashboard.py
-Streamlit Doctor Dashboard for the Type 2 Diabetes Digital Twin Prototype.
+Clinical decision-support dashboard for the Type 2 Diabetes Digital Twin.
 Hackathon: Happiest Health Digital Twin Challenge 2026.
 
 Run with:
@@ -8,14 +8,13 @@ Run with:
 """
 
 from typing import Dict, Any, List
+import os
+import sys
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 
-import os
-import sys
-
-# Ensure app/ directory is on sys.path regardless of execution working directory
+# Ensure app directory is on path
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
@@ -24,118 +23,289 @@ from demo_data import get_all_patients
 from model_adapter import (
     compute_features,
     predict_risk,
-    get_risk_badge,
     get_feature_contributions,
-    validation_rate,
+)
+
+
+from model_adapter import validation_rate
+
+from style import (
+    inject_clinical_css,
+    get_clinical_risk_tier,
+    COLOR_TEAL,
+    COLOR_RISK_LOW,
+    COLOR_RISK_MODERATE,
+    COLOR_RISK_HIGH,
+    COLOR_BORDER,
+    COLOR_MUTED_TEXT,
 )
 
 # Page configuration
 st.set_page_config(
-    page_title="T2D Digital Twin - Doctor Dashboard",
-    page_icon="🩺",
+    page_title="Type 2 Diabetes Digital Twin",
     layout="wide",
 )
 
+# Inject clinical CSS
+inject_clinical_css()
+
 
 def render_footer():
-    """Renders the mandatory regulatory & decision-support disclaimer on all views."""
-    st.markdown("---")
-    st.caption(
-        "⚖️ **Disclaimer:** Decision-support prototype built on synthetic and open data. "
-        "Not medical advice. Final decisions rest with the doctor."
+    """Renders the mandatory regulatory & decision-support disclaimer on every page."""
+    st.markdown(
+        '<div class="clinical-disclaimer">'
+        "Decision-support prototype built on synthetic and open data. Not medical advice. "
+        "Final decisions rest with the doctor."
+        "</div>",
+        unsafe_allow_html=True,
     )
 
 
-def build_cgm_chart(history_df: pd.DataFrame, patient_name: str) -> go.Figure:
-    """Creates a 24-hour interactive CGM line chart with a 180 mg/dL threshold and meal pins."""
+def build_clinical_cgm_chart(history_df: pd.DataFrame, patient_name: str) -> go.Figure:
+    """
+    Creates a 24-hour clinical CGM line chart:
+    - White background, thin teal line
+    - Hourly horizontal tick labels
+    - Fully visible Y-axis title
+    - Light band above 180 mg/dL
+    - Vertical 'now' line via add_shape and add_annotation (avoids categorical vline error)
+    - Meal markers labelled like 'Lunch 70 g' that avoid hover tooltip clipping
+    """
     fig = go.Figure()
 
-    # 1. Glucose trace
+    # 1. Light shaded band above 180 mg/dL (hyperglycemia region)
+    fig.add_hrect(
+        y0=180,
+        y1=260,
+        fillcolor="rgba(162, 59, 59, 0.05)",
+        line_width=0,
+    )
+
+    # 2. 180 mg/dL threshold line
+    fig.add_hline(
+        y=180,
+        line_dash="dash",
+        line_color=COLOR_RISK_HIGH,
+        line_width=1.0,
+        annotation_text="180 mg/dL threshold",
+        annotation_position="top right",
+        annotation_font=dict(color=COLOR_RISK_HIGH, size=10, family="sans-serif"),
+    )
+
+    # 3. Glucose time-series trace (thin teal line)
     fig.add_trace(
         go.Scatter(
             x=history_df["time_str"],
             y=history_df["glucose"],
             mode="lines",
-            name="Glucose (mg/dL)",
-            line=dict(color="#1f77b4", width=2.5),
+            name="Glucose",
+            line=dict(color=COLOR_TEAL, width=1.75),
             hovertemplate="Time: %{x}<br>Glucose: %{y:.1f} mg/dL<extra></extra>",
         )
     )
 
-    # 2. Hyperglycemia risk threshold line (180 mg/dL)
-    fig.add_hline(
-        y=180,
-        line_dash="dash",
-        line_color="#dc3545",
-        line_width=2,
-        annotation_text="High Glucose Threshold (180 mg/dL)",
-        annotation_position="top right",
-        annotation_font=dict(color="#dc3545", size=11),
+    # 4. Vertical "Now" line at the latest observation (uses shape + annotation to support categorical x-axis)
+    now_time = history_df["time_str"].iloc[-1]
+    fig.add_shape(
+        type="line",
+        xref="x",
+        yref="paper",
+        x0=now_time,
+        x1=now_time,
+        y0=0,
+        y1=1,
+        line=dict(color=COLOR_TEAL, width=1.2, dash="dot"),
+    )
+    fig.add_annotation(
+        xref="x",
+        yref="paper",
+        x=now_time,
+        y=1,
+        text="Now",
+        showarrow=False,
+        xanchor="right",
+        yanchor="top",
+        font=dict(color=COLOR_TEAL, size=10, family="sans-serif"),
     )
 
-    # 3. Meal markers
+    # 5. Logged meal markers with clean clinical labels (e.g., 'Lunch 70 g')
     meal_rows = history_df[history_df["is_meal"]]
     if not meal_rows.empty:
+        cleaned_labels = []
+        for name in meal_rows["meal_name"]:
+            c_name = name.replace(" (", " ").replace("g)", " g").replace(")", "")
+            cleaned_labels.append(c_name)
+
         fig.add_trace(
             go.Scatter(
                 x=meal_rows["time_str"],
                 y=meal_rows["glucose"],
                 mode="markers+text",
-                name="Logged Meals",
-                marker=dict(symbol="triangle-up", size=14, color="#fd7e14"),
-                text=meal_rows["meal_name"],
+                name="Meals",
+                marker=dict(symbol="circle", size=7, color=COLOR_RISK_MODERATE),
+                text=cleaned_labels,
                 textposition="top center",
-                hovertemplate="Meal: %{text}<br>Time: %{x}<br>Glucose at meal: %{y:.1f} mg/dL<extra></extra>",
+                textfont=dict(size=10, color="#4A5568", family="sans-serif"),
+                cliponaxis=False,
+                hovertemplate="%{text}<br>Time: %{x}<br>Glucose: %{y:.1f} mg/dL<extra></extra>",
             )
         )
 
+    # Extract hourly horizontal tick marks (times ending in :00)
+    hourly_ticks = [t for t in history_df["time_str"] if t.endswith(":00")]
+
     fig.update_layout(
-        title=f"24-Hour Continuous Glucose Profile — {patient_name}",
-        xaxis_title="Time of Day (5-min intervals)",
-        yaxis_title="Glucose (mg/dL)",
-        yaxis=dict(range=[60, 260]),
+        title=dict(
+            text=f"24-hour continuous glucose profile — {patient_name}",
+            font=dict(family="Georgia, serif", size=15, color="#2D3748"),
+        ),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        xaxis=dict(
+            title=dict(text="Time of day", font=dict(size=11, color="#64748B")),
+            tickmode="array",
+            tickvals=hourly_ticks,
+            ticktext=hourly_ticks,
+            tickangle=0,
+            showgrid=True,
+            gridcolor="#F0F1EE",
+            linecolor=COLOR_BORDER,
+            tickfont=dict(size=10, color="#64748B"),
+        ),
+        yaxis=dict(
+            title=dict(text="Glucose (mg/dL)", font=dict(size=11, color="#2D3748")),
+            range=[70, 240],
+            showgrid=True,
+            gridcolor="#F0F1EE",
+            linecolor=COLOR_BORDER,
+            tickfont=dict(size=10, color="#64748B"),
+        ),
+        showlegend=False,
         hovermode="x unified",
-        margin=dict(l=30, r=30, t=50, b=30),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=380,
+        margin=dict(l=55, r=35, t=45, b=35),
+        height=320,
     )
     return fig
 
+def build_clinical_why_chart(contributions_df: pd.DataFrame) -> go.Figure:
+    """Display signed SHAP contributions on the model's raw output scale."""
 
-def build_why_chart(contributions_df: pd.DataFrame) -> go.Figure:
-    """Builds a horizontal bar chart displaying top factors driving the current prediction."""
-    colors = ["#dc3545" if val > 0 else "#28a745" for val in contributions_df["Impact"]]
+    label_map = {
+        "Current Glucose": "Now | Current glucose",
+        "Current Glucose (glu_now)": "Now | Current glucose",
+        "Recent Meal Carbs (meal_carbs)": "Now | Meal carbohydrates",
+        "Meal Carbohydrates": "Now | Meal carbohydrates",
+        "30-min Trend (glu_change_30)": "Now | 30-min glucose trend",
+        "30-min Glucose Trend": "Now | 30-min glucose trend",
+        "Time Since Meal (mins_since_meal)": "Now | Time since meal",
+        "Time Since Meal": "Now | Time since meal",
+        "Baseline A1c": "Baseline | HbA1c",
+        "Body Mass Index (BMI)": "Baseline | BMI",
+        "Fasting Glucose": "Baseline | Fasting glucose",
+        "Age": "Baseline | Age",
+        "Gender": "Baseline | Gender",
+        "HDL": "Baseline | HDL",
+        "Insulin": "Baseline | Insulin",
+        "Triglycerides": "Baseline | Triglycerides",
+    }
+
+    if contributions_df.empty or not {"Feature", "Impact"}.issubset(
+        contributions_df.columns
+    ):
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Feature explanations are currently unavailable.",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font=dict(size=13, color="#64748B"),
+        )
+        fig.update_layout(
+            plot_bgcolor="#FFFFFF",
+            paper_bgcolor="#FFFFFF",
+            height=260,
+            margin=dict(l=15, r=15, t=35, b=25),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+        )
+        return fig
+
+    chart_df = contributions_df.copy()
+    chart_df["Impact"] = pd.to_numeric(chart_df["Impact"], errors="coerce")
+    chart_df = chart_df.dropna(subset=["Impact"])
+    chart_df["Display"] = chart_df["Feature"].map(
+        lambda name: label_map.get(name, name)
+    )
+    chart_df["Magnitude"] = chart_df["Impact"].abs()
+    chart_df = chart_df.sort_values("Magnitude", ascending=True).tail(10)
+
+    bar_colors = [
+        COLOR_RISK_HIGH if value > 0 else COLOR_RISK_LOW
+        for value in chart_df["Impact"]
+    ]
 
     fig = go.Figure(
         go.Bar(
-            x=contributions_df["Impact"],
-            y=contributions_df["Feature"],
+            x=chart_df["Impact"],
+            y=chart_df["Display"],
             orientation="h",
-            marker_color=colors,
-            hovertemplate="Feature: %{y}<br>Impact: %{x:+.3f}<extra></extra>",
+            marker=dict(color=bar_colors),
+            customdata=chart_df["Magnitude"],
+            hovertemplate=(
+                "%{y}<br>Signed SHAP contribution: %{x:+.3f}"
+                "<br>Magnitude: %{customdata:.3f}<extra></extra>"
+            ),
         )
     )
+
     fig.update_layout(
-        title="What drives this score (from the model)",
-        xaxis_title="Push on the risk score (right = higher risk, left = lower risk)",
-        yaxis=dict(automargin=True),
-        margin=dict(l=10, r=20, t=40, b=20),
-        height=320,
+        title=dict(
+            text="Top contributing factors",
+            font=dict(family="Georgia, serif", size=14, color="#2D3748"),
+        ),
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="#FFFFFF",
+        xaxis=dict(
+            title=dict(
+                text="SHAP contribution (raw model-output scale)",
+                font=dict(size=10, color="#64748B"),
+            ),
+            showgrid=True,
+            gridcolor="#F0F1EE",
+            linecolor=COLOR_BORDER,
+            zeroline=True,
+            zerolinecolor="#64748B",
+            tickfont=dict(size=10, color="#64748B"),
+        ),
+        yaxis=dict(
+            tickfont=dict(size=10, color="#2D3748"),
+            linecolor=COLOR_BORDER,
+        ),
+        margin=dict(l=10, r=20, t=35, b=40),
+        height=300,
     )
-    
     return fig
 
 
+
 def show_patient_list(patients: List[Dict[str, Any]]):
-    """Page 1: Patient Cohort List with risk sorting and triage badges."""
-    st.title("🩺 Type 2 Diabetes: Digital Twin Risk Monitor")
+    """
+    Page 1: Compact hospital-worklist style table.
+    Columns: Patient, Age/Sex, Glucose now, 30-min change with arrow, Last meal,
+             Model score with a small bar, Open link.
+    Sorted by score. One summary line instead of four big tiles.
+    """
+    st.markdown("<h1>Simulated patients</h1>", unsafe_allow_html=True)
     st.markdown(
-        "**Physician Decision-Support Overview** — Simulated patients. Model risk scores "
-        "for reaching 180 mg/dL within the next 2 hours."
-        
+        '<div style="font-size: 0.92rem; color: #2D3748; margin-bottom: 0.5rem;">'
+        "Simulated patients. Model risk scores for reaching 180 mg/dL within the next 2 hours."
+        "</div>",
+        unsafe_allow_html=True,
     )
 
-    # Calculate current risk for all patients
+    # Compute risk for all patients
     patient_rows = []
     for p in patients:
         feat_df = compute_features(
@@ -145,82 +315,113 @@ def show_patient_list(patients: List[Dict[str, Any]]):
             meal_carbs=p["meal_carbs"],
         )
         risk = predict_risk(feat_df)
-        label, hex_color, badge = get_risk_badge(risk)
+        tier_label, tier_color = get_clinical_risk_tier(risk)
 
         patient_rows.append({
             "id": p["id"],
             "name": p["name"],
             "risk": risk,
-            "badge": badge,
-            "hex_color": hex_color,
-            "label": label,
+            "tier_label": tier_label,
+            "tier_color": tier_color,
             "age": int(p["static"]["Age"]),
-            "gender": "Male" if p["static"]["Gender"] == 1 else "Female",
-            "bmi": p["static"]["BMI"],
-            "a1c": p["static"]["A1c"],
-            "fasting_glu": p["static"]["fasting_glu"],
+            "sex": "M" if p["static"]["Gender"] == 1 else "F",
             "glu_now": p["glu_now"],
             "glu_change_30": p["glu_change_30"],
             "mins_since_meal": int(p["mins_since_meal"]),
-            "meal_carbs": p["meal_carbs"],
+            "meal_carbs": int(p["meal_carbs"]),
         })
 
-    # Sort cohort by risk descending (highest risk first)
+    # Sort cohort by risk descending
     patient_rows.sort(key=lambda x: x["risk"], reverse=True)
 
-    # Triage summary counters
-    high_count = sum(1 for p in patient_rows if p["risk"] >= 0.4)
-    mod_count = sum(1 for p in patient_rows if 0.2 <= p["risk"] < 0.4)
-    low_count = sum(1 for p in patient_rows if p["risk"] < 0.2)
+    # Triage summary counts
+    high_count = sum(1 for p in patient_rows if p["risk"] >= 0.40)
+    mod_count = sum(1 for p in patient_rows if 0.20 <= p["risk"] < 0.40)
+    low_count = sum(1 for p in patient_rows if p["risk"] < 0.20)
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Monitored Patients", len(patient_rows))
-    col2.metric("High Risk (🔴 ≥ 0.40)", high_count)
-    col3.metric("Moderate Risk (🟡 0.20–0.40)", mod_count)
-    col4.metric("Low Risk (🟢 < 0.20)", low_count)
+    # One summary line instead of four big tiles
+    st.markdown(
+        f'<div style="font-size: 0.85rem; color: {COLOR_MUTED_TEXT}; margin-bottom: 1.1rem; padding-bottom: 0.6rem; border-bottom: 1px solid {COLOR_BORDER};">'
+        f"Simulated patients: <strong>{len(patient_rows)} total</strong> &nbsp;·&nbsp; "
+        f'<span style="color: {COLOR_RISK_HIGH}; font-weight: 500;">{high_count} high risk</span> &nbsp;·&nbsp; '
+        f'<span style="color: {COLOR_RISK_MODERATE}; font-weight: 500;">{mod_count} moderate</span> &nbsp;·&nbsp; '
+        f'<span style="color: {COLOR_RISK_LOW}; font-weight: 500;">{low_count} low</span>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
-    st.markdown("### Patient Triage List")
-    st.caption("Click **Open Virtual Patient** to inspect full CGM history, factor explanations, and simulate what-if scenarios.")
+    # Compact hospital-worklist table header
+    header_cols = st.columns([2.2, 1.0, 1.3, 1.4, 1.6, 2.0, 0.9])
+    header_cols[0].caption("PATIENT")
+    header_cols[1].caption("AGE / SEX")
+    header_cols[2].caption("GLUCOSE NOW")
+    header_cols[3].caption("30-MIN CHANGE")
+    header_cols[4].caption("LAST MEAL")
+    header_cols[5].caption("MODEL RISK SCORE")
+    header_cols[6].caption("")
 
+    st.markdown(
+        '<div style="border-bottom: 1px solid #CBD5E1; margin: -6px 0 6px 0;"></div>',
+        unsafe_allow_html=True,
+    )
+
+    # Patient worklist rows
     for p in patient_rows:
-        with st.container(border=True):
-            cols = st.columns([1.5, 2.2, 1.8, 1.5, 1.8, 2.0])
-            with cols[0]:
-                st.write(f"**{p['id']}**")
-                st.caption(f"{p['gender']}, {p['age']} yrs")
-            with cols[1]:
-                st.write(f"**{p['name']}**")
-                st.caption(f"BMI: {p['bmi']:.1f} | HbA1c: {p['a1c']:.1f}%")
-            with cols[2]:
-                st.write(f"**Current:** {p['glu_now']} mg/dL")
-                delta_str = f"{p['glu_change_30']:+0.1f} mg/dL (30m)"
-                st.caption(delta_str)
-            with cols[3]:
-                st.write(f"Last Meal: {int(p['meal_carbs'])}g")
-                st.caption(f"{p['mins_since_meal']} mins ago")
-            with cols[4]:
-                st.markdown(
-                    f"<div style='font-size: 1.1rem; font-weight: bold; color: {p['hex_color']};'>"
-                    f"{p['badge']}</div>"
-                    f"<div style='font-size: 0.82rem; color: #666;'>"
-                    f"Model score: {p['risk']:.2f}</div>",
-                    unsafe_allow_html=True,
-                )
-            with cols[5]:
-                if st.button("Open Virtual Patient", key=f"btn_{p['id']}", use_container_width=True):
-                    st.session_state["selected_patient_id"] = p["id"]
-                    st.rerun()
+        cols = st.columns([2.2, 1.0, 1.3, 1.4, 1.6, 2.0, 0.9])
+        with cols[0]:
+            st.markdown(
+                f"<div style='font-weight: 500; font-size: 0.90rem;'>{p['name']}</div>"
+                f"<div style='font-size: 0.78rem; color: {COLOR_MUTED_TEXT};'>{p['id']}</div>",
+                unsafe_allow_html=True,
+            )
+        with cols[1]:
+            st.write(f"{p['age']} / {p['sex']}")
+        with cols[2]:
+            st.write(f"{p['glu_now']:.1f} mg/dL")
+        with cols[3]:
+            # Arrow indicator
+            arrow = "↑" if p["glu_change_30"] > 0 else ("↓" if p["glu_change_30"] < 0 else "→")
+            st.write(f"{arrow} {p['glu_change_30']:+.1f} mg/dL")
+        with cols[4]:
+            st.write(f"{p['meal_carbs']} g, {p['mins_since_meal']} min ago")
+        with cols[5]:
+            bar_pct = min(max(p["risk"] * 100, 3), 100)
+            st.markdown(
+                f"<div style='font-weight: 600; font-size: 0.88rem; color: {p['tier_color']};'>"
+                f"Model score: {p['risk']:.2f} <span style='font-weight: 400; font-size: 0.78rem;'>({p['tier_label']})</span>"
+                f"</div>"
+                f"<div class='risk-bar-container'>"
+                f"<div class='risk-bar-fill' style='width: {bar_pct:.1f}%; background-color: {p['tier_color']};'></div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with cols[6]:
+            if st.button("Open", key=f"open_{p['id']}", width="stretch"):
+                st.session_state["selected_patient_id"] = p["id"]
+                st.rerun()
+
+        st.markdown(
+            f'<div style="border-bottom: 1px solid {COLOR_BORDER}; margin: 2px 0 6px 0;"></div>',
+            unsafe_allow_html=True,
+        )
 
     render_footer()
 
 
 def show_patient_detail(patient: Dict[str, Any]):
-    """Page 2: Patient Detail view (Virtual Patient) with CGM, Risk, Why, and What-if panels."""
-    if st.button("⬅ Back to Patient Cohort"):
+    """
+    Page 2: Clinical patient detail view.
+    - Header on one line with quiet line of labs, no boxed profile card
+    - Model risk score with validation sentence
+    - 24-hour CGM chart
+    - Why and What-if side by side, separated by a thin 1px divider
+    """
+    # Back navigation link
+    if st.button("← Patients"):
         st.session_state["selected_patient_id"] = None
         st.rerun()
 
-    # Compute baseline risk
+    # Feature preparation and baseline prediction
     feat_df = compute_features(
         history=patient["history"],
         static=patient["static"],
@@ -228,154 +429,178 @@ def show_patient_detail(patient: Dict[str, Any]):
         meal_carbs=patient["meal_carbs"],
     )
     baseline_risk = predict_risk(feat_df)
-    label, hex_color, badge = get_risk_badge(baseline_risk)
+    threshold_reached = patient["glu_now"] >= 180
+    tier_label, tier_color = get_clinical_risk_tier(baseline_risk)
 
-    # Header
-    head_left, head_right = st.columns([3, 1])
-    with head_left:
-        st.title(f"Virtual Patient: {patient['name']} ({patient['id']})")
-    with head_right:
+    # 1. Header on one line
+    st.markdown(
+        f"<h2 style='margin-bottom: 0.2rem;'>"
+        f"{patient['name']} <span style='color: {COLOR_MUTED_TEXT}; font-size: 1.10rem;'>({patient['id']})</span>"
+        f"</h2>",
+        unsafe_allow_html=True,
+    )
+
+    # 2. Quiet line of labs (no boxed profile card)
+    gender_str = "M" if patient["static"]["Gender"] == 1 else "F"
+    st.markdown(
+        f'<div class="clinical-metalist">'
+        f"Age: <span>{int(patient['static']['Age'])}</span> · "
+        f"Sex: <span>{gender_str}</span> · "
+        f"BMI: <span>{patient['static']['BMI']:.1f}</span> · "
+        f"HbA1c: <span>{patient['static']['A1c']:.1f}%</span> · "
+        f"Fasting glucose: <span>{int(patient['static']['fasting_glu'])} mg/dL</span> · "
+        f"Fasting insulin: <span>{int(patient['static']['Insulin'])} µIU/mL</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    # 3. Model risk score section with validation sentence
+
+    if threshold_reached:
+        score_heading = "Current glucose status"
+        score_display = "Threshold already reached"
+        val_sentence = (
+            "Current glucose is at or above 180 mg/dL. "
+            "This is a threshold status, not a prediction of a future event."
+        )
+    else:
+        score_heading = "Model risk score"
+        score_display = f"{baseline_risk:.2f} — {tier_label}"
+        val_result = validation_rate(baseline_risk)
+
+        if val_result is None:
+            val_sentence = (
+                "Calibration data is unavailable; this score should not be "
+                "interpreted as a calibrated probability."
+            )
+        else:
+            if isinstance(val_result, dict):
+                rate = val_result["rate"]
+                rows = val_result["rows"]
+            else:
+                rate, rows = val_result
+
+            val_sentence = (
+                f"In the saved calibration data, about {rate:.0%} of readings "
+                f"in this score range had the target event ({rows:,} readings; "
+                "neighbouring five-minute readings may be correlated)."
+            )
+
+
+    st.html(
+        f"""
+        <div class="clinical-score-panel" style="border-left-color: {tier_color};">
+            <div style="font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: {COLOR_MUTED_TEXT}; font-weight: 600;">
+                {score_heading}
+            </div>
+            <div style="font-size: 1.55rem; font-weight: 600; color: {tier_color}; margin: 2px 0;">
+                {score_display}
+            </div>
+            <div style="font-size: 0.90rem; color: #2D3748; margin-top: 4px;">
+                A relative score from the model, not a calibrated probability.
+            </div>
+            <div style="font-size: 0.82rem; color: {COLOR_MUTED_TEXT}; margin-top: 4px; line-height: 1.4;">
+                {val_sentence}
+            </div>
+        </div>
+        """
+    )
+
+
+
+
+
+    # 4. 24-Hour Clinical Glucose Chart
+    cgm_fig = build_clinical_cgm_chart(patient["history"], patient["name"])
+    st.plotly_chart(cgm_fig, width="stretch")
+
+    # Thin divider before Why and What-if panels
+    st.markdown('<hr>', unsafe_allow_html=True)
+
+    # 5. Why and What-if side by side, separated by a thin vertical divider
+    col_why, col_div, col_whatif = st.columns([1.0, 0.05, 1.0])
+
+    with col_why:
+        st.markdown("<h3>Why: top contributing factors</h3>", unsafe_allow_html=True)
+        contributions_df = get_feature_contributions(feat_df)
+        why_fig = build_clinical_why_chart(contributions_df)
+        st.plotly_chart(why_fig, width="stretch")
+        st.caption(
+    "Positive and negative bars show the direction of each feature's contribution "
+    "to the model's raw output. Magnitude is not a percentage or a causal effect."
+)
+
+    with col_div:
+        # Thin 1px vertical line
         st.markdown(
-            f"<div style='text-align: right; padding-top: 15px; font-size: 1.25rem; font-weight: bold; color: {hex_color};'>"
-            f"{badge}</div>",
+            f'<div style="border-left: 1px solid {COLOR_BORDER}; min-height: 400px; height: 100%; margin: 0 auto; width: 1px;"></div>',
             unsafe_allow_html=True,
         )
 
-    # 1. Profile Card
-    with st.container(border=True):
-        st.subheader("Patient Clinical Profile")
-        p_cols = st.columns(6)
-        p_cols[0].metric("Age", f"{int(patient['static']['Age'])} yrs")
-        p_cols[1].metric("Gender", "Male" if patient['static']['Gender'] == 1 else "Female")
-        p_cols[2].metric("BMI", f"{patient['static']['BMI']:.1f}")
-        p_cols[3].metric("HbA1c", f"{patient['static']['A1c']:.1f}%")
-        p_cols[4].metric("Fasting Glucose", f"{patient['static']['fasting_glu']:.0f} mg/dL")
-        p_cols[5].metric("Fasting Insulin", f"{patient['static']['Insulin']:.0f} µIU/mL")
-
-    # 2. Current Risk Banner
-        # 2. Current Risk Banner
-    # Validation line: how often cases with a similar score really reached 180 mg/dL
-    val = validation_rate(baseline_risk)
-    if val is not None:
-        val_rate, val_rows = val
-       
-        validation_text = (
-            f"In validation on unseen participants, about <strong>{val_rate:.0%}</strong> of readings "
-            f"with a score in this range were followed by a rise to 180 mg/dL within 2 hours "
-            f"({val_rows:,} five-minute readings; neighbouring readings are highly correlated)."
-        )
-    else:
-        validation_text = ""
-
-    st.markdown(
-        f"""
-        <div style="background-color: rgba(220, 53, 69, 0.08); border-left: 6px solid {hex_color};
-                    padding: 14px 20px; border-radius: 6px; margin: 12px 0 20px 0;">
-            <div style="font-size: 0.95rem; color: #555; text-transform: uppercase; font-weight: 600;">
-                Model risk score (reaching 180 mg/dL within 2 hours)
-            </div>
-            <div style="font-size: 1.55rem; font-weight: 700; color: {hex_color}; margin: 4px 0;">
-                {baseline_risk:.2f} — {label}
-            </div>
-            <div style="font-size: 1.0rem; color: #333;">
-                A relative score from the model, not a calibrated probability. {validation_text}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    
-
-    # 3. 24-Hour Glucose Line Chart
-    cgm_fig = build_cgm_chart(patient["history"], patient["name"])
-    st.plotly_chart(cgm_fig, use_container_width=True)
-
-    # 4. Explanations & What-if Simulation
-    col_why, col_whatif = st.columns(2)
-
-    with col_why:
-        with st.container(border=True):
-            st.subheader("💡 'Why' Panel: Factor Contributions")
-            st.caption(
-                "Key drivers pushing risk towards or away from the 180 mg/dL threshold."
-            )
-            contributions_df = get_feature_contributions(feat_df)
-            why_fig = build_why_chart(contributions_df)
-            st.plotly_chart(why_fig, use_container_width=True)
-            
-            st.caption(
-                "Bars show how much each factor moved this patient's score, according to the model. "
-                "'Baseline' items are fixed for the patient; 'Now' items reflect the current situation. "
-                "Bar size is a relative measure, not a percentage, and does not prove a cause."
-            )
-
     with col_whatif:
-        with st.container(border=True):
-            st.subheader("🧪 'What-If' Simulation (Digital Twin)")
-            st.caption(
-                "Simulate carbohydrate and meal timing adjustments to explore risk sensitivity."
-            )
+        st.markdown("<h3>What-if simulation</h3>", unsafe_allow_html=True)
+        st.caption("Simulate carbohydrate intake and postprandial timing adjustments.")
 
-            # Sliders (Strictly meal carbs & minutes since meal - NO activity or heart rate)
-            sim_carbs = st.slider(
-                "Carbohydrates in last meal (g)",
-                min_value=0,
-                max_value=120,
-                value=int(patient["meal_carbs"]),
-                step=5,
-                help="Simulate an adjusted carbohydrate intake for the last meal.",
-            )
+        # Sliders (strictly meal carbs & minutes since meal - no activity or heart rate)
+        sim_carbs = st.slider(
+            "Carbohydrates in last meal (g)",
+            min_value=0,
+            max_value=120,
+            value=int(patient["meal_carbs"]),
+            step=5,
+            help="Simulate an adjusted carbohydrate intake for the last meal.",
+        )
 
-            sim_mins = st.slider(
-                "Minutes elapsed since last meal",
-                min_value=15,
-                max_value=240,
-                value=int(patient["mins_since_meal"]),
-                step=5,
-                help="Simulate the passage of time or earlier meal scheduling.",
-            )
+        sim_mins = st.slider(
+            "Minutes elapsed since last meal",
+            min_value=15,
+            max_value=240,
+            value=int(patient["mins_since_meal"]),
+            step=5,
+            help="Simulate the passage of time or earlier meal scheduling.",
+        )
 
-            # Re-run prediction under simulation
-            sim_feat_df = compute_features(
-                history=patient["history"],
-                static=patient["static"],
-                mins_since_meal=float(sim_mins),
-                meal_carbs=float(sim_carbs),
-            )
-            sim_risk = predict_risk(sim_feat_df)
-            sim_label, sim_hex, sim_badge = get_risk_badge(sim_risk)
+        # Re-run predict_risk under simulation
+        sim_feat_df = compute_features(
+            history=patient["history"],
+            static=patient["static"],
+            mins_since_meal=float(sim_mins),
+            meal_carbs=float(sim_carbs),
+        )
+        sim_risk = predict_risk(sim_feat_df)
+        sim_tier_label, sim_tier_color = get_clinical_risk_tier(sim_risk)
 
-            # Before and after comparison
-                    
-            delta_risk = sim_risk - baseline_risk
+        # Comparison calculation in 2-decimal scores (never percentage points)
+        delta_risk = sim_risk - baseline_risk
+        abs_delta = abs(delta_risk)
 
-            st.markdown("#### Simulation Outcome")
-            st.write(
-                f"**Baseline score:** `{baseline_risk:.2f}` "
-                f"&nbsp; ➔ &nbsp; **Simulated score:** `{sim_risk:.2f}` "
-                f"&nbsp; (change {delta_risk:+.2f})"
-            )
+        st.markdown(
+            f'<div style="margin-top: 12px; margin-bottom: 8px; font-size: 0.90rem; font-weight: 500;">'
+            f"Baseline score: <code>{baseline_risk:.3f}</code> &nbsp;→&nbsp; "
+            f"Simulated score: <code>{sim_risk:.3f}</code> &nbsp;(change: <code>{delta_risk:+.3f}</code>)"
 
-            if delta_risk < -0.005:
-                st.success(
-                    f"According to the model, these meal inputs lower the risk score by {abs(delta_risk):.2f}."
-                )
-            elif delta_risk > 0.005:
-                st.warning(
-                    f"According to the model, these meal inputs raise the risk score by {delta_risk:.2f}."
-                )
-            else:
-                st.info("According to the model, the risk score is essentially unchanged.")
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
-            st.caption(
-                "This shows how sensitive the model is to the meal inputs. The patient's glucose "
-                "history is kept fixed, so it is not a forecast of what would really happen."
-            )
-            
-            st.caption(
-                f"Simulated classification: <span style='color: {sim_hex}; font-weight: bold;'>{sim_badge}</span>",
-                unsafe_allow_html=True,
-            )
+        # Exact sentences as specified
+        if delta_risk < -0.005:
+            st.info(f"According to the model, these meal inputs lower the risk score by {abs_delta:.3f}.")
+        elif delta_risk > 0.005:
+            st.warning(f"According to the model, these meal inputs raise the risk score by {abs_delta:.3f}.")
+        else:
+            st.info("According to the model, the risk score is essentially unchanged.")
+
+        st.caption(
+            "This shows how sensitive the model is to the meal inputs. The patient's glucose history "
+            "is kept fixed, so it is not a forecast of what would really happen."
+        )
+
+        st.caption(
+            f'Simulated classification: <span style="color: {sim_tier_color}; font-weight: 600;">{sim_tier_label}</span> '
+            f'(score: {sim_risk:.2f})',
+            unsafe_allow_html=True,
+        )
 
     render_footer()
 
@@ -385,7 +610,7 @@ def main():
     patients = get_all_patients()
     patient_map = {p["id"]: p for p in patients}
 
-    # Initialize navigation state
+    # Initialize session navigation state
     if "selected_patient_id" not in st.session_state:
         st.session_state["selected_patient_id"] = None
 
